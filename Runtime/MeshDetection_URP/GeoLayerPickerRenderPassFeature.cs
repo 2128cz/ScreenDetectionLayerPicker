@@ -3,10 +3,10 @@ using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
 
-#if UNITY_2022_1_OR_NEWER // urp 13
+// #if UNITY_2022_1_OR_NEWER // urp 13
 namespace XericLibrary.PostProcess
 {
-    // ¶¨ÒåÊı¾İ½á¹¹£¬ÓÃÀ´´æ´¢Õ¹Æ½ºóµÄ SubMesh ĞÅÏ¢
+    // å®šä¹‰æ•°æ®ç»“æ„ï¼Œç”¨æ¥å­˜å‚¨å±•å¹³åçš„ SubMesh ä¿¡æ¯
     [System.Serializable]
     public struct SubMeshDrawData
     {
@@ -19,13 +19,13 @@ namespace XericLibrary.PostProcess
     public class GeoLayerPickerRenderPassFeature : ScriptableRendererFeature
     {
         
-        // ÔÚ Feature Íâ²¿ÀàÖĞ£¬Ìí¼Ó Inspector Ãæ°åĞèÒªµÄÅäÖÃ²ÎÊı
-        [Header("Ê°È¡ÉèÖÃ")]
+        // åœ¨ Feature å¤–éƒ¨ç±»ä¸­ï¼Œæ·»åŠ  Inspector é¢æ¿éœ€è¦çš„é…ç½®å‚æ•°
+        [Header("æ‹¾å–è®¾ç½®")]
         public Material pickMaterial;
         public MeshFilter[] geoMeshes;
         public Vector2Int pickRTSize = new Vector2Int(64, 64);
 
-        // ÄÚ²¿³ÖÓĞµÄ×ÊÔ´
+        // å†…éƒ¨æŒæœ‰çš„èµ„æº
         private RenderTexture m_PickRT;
         private List<SubMeshDrawData> m_DrawList = new List<SubMeshDrawData>();
 
@@ -39,7 +39,7 @@ namespace XericLibrary.PostProcess
             
             public override void OnCameraSetup(CommandBuffer cmd, ref RenderingData renderingData)
             {
-                // ÔÚ URP ÖĞ£¬±ØĞëÔÚÕâÀï¸æËß¹ÜÏßÎÒÃÇÒªäÖÈ¾µ½ÄÄÕÅ RT ÉÏ
+                // åœ¨ URP ä¸­ï¼Œå¿…é¡»åœ¨è¿™é‡Œå‘Šè¯‰ç®¡çº¿æˆ‘ä»¬è¦æ¸²æŸ“åˆ°å“ªå¼  RT ä¸Š
                 if (passRT != null)
                 {
                     ConfigureTarget(new RenderTargetIdentifier(passRT));
@@ -49,27 +49,27 @@ namespace XericLibrary.PostProcess
 
             public override void Execute(ScriptableRenderContext context, ref RenderingData renderingData)
             {
-                // °²È«¼ì²é
+                // å®‰å…¨æ£€æŸ¥
                 if (passMaterial == null || passRT == null || passDrawList == null || passDrawList.Count == 0) 
                     return;
 
-                // ´Ó¶ÔÏó³Ø»ñÈ¡ CommandBuffer (ĞÔÄÜ¸üºÃ)
+                // ä»å¯¹è±¡æ± è·å– CommandBuffer (æ€§èƒ½æ›´å¥½)
                 CommandBuffer cmd = CommandBufferPool.Get("GeoLayerPickBuffer");
 
-                // ÔÚ URP 13 ÖĞ£¬¾ø¶Ô²»ÄÜÔÚ Execute ÀïÓÃ cmd.SetRenderTarget()¡£±ØĞëÖØĞ´ OnCameraSetup£¬Ê¹ÓÃ ConfigureTarget() ¸æËß URP Õâ¸ö Pass µÄÊä³öÄ¿±êÊÇÄã´´½¨µÄ m_PickRT¡£
-                // ÉèÖÃÊÓ¿ÚÎª RT µÄ³ß´ç (64x64)
+                // åœ¨ URP 13 ä¸­ï¼Œç»å¯¹ä¸èƒ½åœ¨ Execute é‡Œç”¨ cmd.SetRenderTarget()ã€‚å¿…é¡»é‡å†™ OnCameraSetupï¼Œä½¿ç”¨ ConfigureTarget() å‘Šè¯‰ URP è¿™ä¸ª Pass çš„è¾“å‡ºç›®æ ‡æ˜¯ä½ åˆ›å»ºçš„ m_PickRTã€‚
+                // è®¾ç½®è§†å£ä¸º RT çš„å°ºå¯¸ (64x64)
                 cmd.SetViewport(new Rect(0, 0, passRT.width, passRT.height));
 
-                // ¡¾ºËĞÄ¡¿±éÀú»æÖÆÃ¿Ò»¸ö SubMesh
+                // ã€æ ¸å¿ƒã€‘éå†ç»˜åˆ¶æ¯ä¸€ä¸ª SubMesh
                 for (int i = 0; i < passDrawList.Count; i++)
                 {
                     var data = passDrawList[i];
                     cmd.SetGlobalInt(m_MatIDProperty, data.uniqueMatID);
-                    // ×¢ÒâµÚËÄ¸ö²ÎÊı submeshIndex£¬ÕâÊÇ¶à²ÄÖÊ²å²ÛµÄ¹Ø¼ü
+                    // æ³¨æ„ç¬¬å››ä¸ªå‚æ•° submeshIndexï¼Œè¿™æ˜¯å¤šæè´¨æ’æ§½çš„å…³é”®
                     cmd.DrawMesh(data.mesh, data.matrix, passMaterial, data.subMeshIndex);
                 }
 
-                // Ìá½»ÃüÁî¸ø GPU Ö´ĞĞ
+                // æäº¤å‘½ä»¤ç»™ GPU æ‰§è¡Œ
                 context.ExecuteCommandBuffer(cmd);
                 CommandBufferPool.Release(cmd);
             }
@@ -87,7 +87,7 @@ namespace XericLibrary.PostProcess
 
             m_ScriptablePass.renderPassEvent = RenderPassEvent.AfterRenderingOpaques;
 
-            // ¡¾²½Öè 4¡¿ÔÚ Create ÖĞ³õÊ¼»¯ RT£¬²¢Õ¹Æ½ SubMesh Êı¾İ
+            // ã€æ­¥éª¤ 4ã€‘åœ¨ Create ä¸­åˆå§‹åŒ– RTï¼Œå¹¶å±•å¹³ SubMesh æ•°æ®
             if (m_PickRT != null) m_PickRT.Release();
             m_PickRT = new RenderTexture(pickRTSize.x, pickRTSize.y, 0, RenderTextureFormat.ARGB32);
             m_PickRT.Create();
@@ -96,19 +96,19 @@ namespace XericLibrary.PostProcess
         }
 
         
-        // Ìá¹©Ò»¸ö¹«¿ª·½·¨£¬·½±ãÔËĞĞÊ±¶¯Ì¬Ë¢ĞÂÍø¸ñÁĞ±í
+        // æä¾›ä¸€ä¸ªå…¬å¼€æ–¹æ³•ï¼Œæ–¹ä¾¿è¿è¡Œæ—¶åŠ¨æ€åˆ·æ–°ç½‘æ ¼åˆ—è¡¨
         public void RebuildDrawList()
         {
             m_DrawList.Clear();
             if (geoMeshes == null) 
                 return;
             
-            int globalIDCounter = 1; // ID ´Ó 1 ¿ªÊ¼£¬0 Áô¸ø±³¾°
+            int globalIDCounter = 1; // ID ä» 1 å¼€å§‹ï¼Œ0 ç•™ç»™èƒŒæ™¯
             foreach (var mf in geoMeshes)
             {
                 if (mf == null || mf.sharedMesh == null) continue;
 
-                // ±éÀúÍø¸ñµÄÃ¿Ò»¸ö²ÄÖÊ²å²Û (SubMesh)
+                // éå†ç½‘æ ¼çš„æ¯ä¸€ä¸ªæè´¨æ’æ§½ (SubMesh)
                 for (int sub = 0; sub < mf.sharedMesh.subMeshCount; sub++)
                 {
                     m_DrawList.Add(new SubMeshDrawData
@@ -124,7 +124,7 @@ namespace XericLibrary.PostProcess
 
         public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
         {
-            // ½«Íâ²¿Êı¾İ´«µİ¸øÄÚ²¿µÄ Pass£¬²¢×¢Èë¹ÜÏß
+            // å°†å¤–éƒ¨æ•°æ®ä¼ é€’ç»™å†…éƒ¨çš„ Passï¼Œå¹¶æ³¨å…¥ç®¡çº¿
             if (m_ScriptablePass != null)
             {
                 m_ScriptablePass.passMaterial = pickMaterial;
@@ -136,8 +136,8 @@ namespace XericLibrary.PostProcess
         }
         
         
-        // ±©Â¶ RT ¸øÍâ²¿¶ÁÈ¡ÏñËØÓÃ
+        // æš´éœ² RT ç»™å¤–éƒ¨è¯»å–åƒç´ ç”¨
         public RenderTexture GetPickRT() => m_PickRT;
     }
 }
-#endif
+// #endif

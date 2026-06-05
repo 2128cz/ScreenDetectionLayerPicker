@@ -2,7 +2,7 @@ Shader "XericLibrary/ScreenDectection/MeshPicking"
 {
     Properties
     {
-        // ´«Èë²ÄÖÊID
+        // ä¼ å…¥æè´¨ID
         _MatID ("Material ID", Int) = 0 
     }
     SubShader
@@ -12,7 +12,7 @@ Shader "XericLibrary/ScreenDectection/MeshPicking"
 
         Pass
         {
-            // ¹Ø±Õ¹âÕÕºÍÎíĞ§£¬´¿Êı¾İÊä³ö
+            // å…³é—­å…‰ç…§å’Œé›¾æ•ˆï¼Œçº¯æ•°æ®è¾“å‡º
             Lighting Off
             Fog { Mode Off }
 
@@ -29,31 +29,31 @@ Shader "XericLibrary/ScreenDectection/MeshPicking"
             struct v2f
             {
                 float4 vertex : SV_POSITION;
-                float3 worldPos : TEXCOORD0; // ´«µİÊÀ½ç×ø±ê¸øÆ¬¶Î×ÅÉ«Æ÷
+                float3 worldPos : TEXCOORD0; // ä¼ é€’ä¸–ç•Œåæ ‡ç»™ç‰‡æ®µç€è‰²å™¨
             };
 
-            int _MatID; // ½ÓÊÕ²ÄÖÊID
+            int _MatID; // æ¥æ”¶æè´¨ID
 
             v2f vert (appdata v)
             {
                 v2f o;
                 o.vertex = UnityObjectToClipPos(v.vertex);
-                // ¼ÆËãÊÀ½ç×ø±ê²¢´«µİ
+                // è®¡ç®—ä¸–ç•Œåæ ‡å¹¶ä¼ é€’
                 o.worldPos = mul(unity_ObjectToWorld, v.vertex).xyz;
                 return o;
             }
 
             fixed4 frag (v2f i) : SV_Target
             {
-                // 1. ½«ÊÀ½ç×ø±ê±àÂëµ½ RGB Í¨µÀ
-                // ¼ÙÉèÄãµÄµØÖÊÄ£ĞÍÊÀ½ç×ø±ê·¶Î§ÔÚ -1000 µ½ 1000 Ö®¼ä
-                // ¼ÓÉÏ 1000 ±ä³É 0~2000£¬ÔÙ³ıÒÔ 2000 ±ä³É 0~1
+                // 1. å°†ä¸–ç•Œåæ ‡ç¼–ç åˆ° RGB é€šé“
+                // å‡è®¾ä½ çš„åœ°è´¨æ¨¡å‹ä¸–ç•Œåæ ‡èŒƒå›´åœ¨ -1000 åˆ° 1000 ä¹‹é—´
+                // åŠ ä¸Š 1000 å˜æˆ 0~2000ï¼Œå†é™¤ä»¥ 2000 å˜æˆ 0~1
                 float3 encodedPos = (i.worldPos + 1000.0) / 2000.0;
                 
-                // 2. ½«²ÄÖÊID±àÂëµ½ Alpha Í¨µÀ (¼ÙÉèID²»³¬¹ı255)
+                // 2. å°†æè´¨IDç¼–ç åˆ° Alpha é€šé“ (å‡è®¾IDä¸è¶…è¿‡255)
                 float encodedID = _MatID / 255.0;
 
-                // Êä³ö RGBA = (PosX, PosY, PosZ, MatID)
+                // è¾“å‡º RGBA = (PosX, PosY, PosZ, MatID)
                 return fixed4(encodedPos.x, encodedPos.y, encodedPos.z, encodedID);
             }
             ENDCG
