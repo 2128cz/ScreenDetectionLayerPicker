@@ -73,6 +73,9 @@ namespace XericLibrary.PostProcess
         public int totalPixelCount;
         public Vector2 centerPixelPos;
         public Vector3 centerWorldPos;
+        
+        public Vector3 minWorldPos;
+        public Vector3 maxWorldPos;
         public bool isValid => matID > 0 && segments.Count > 0;
 
         public Material GetMaterial()
@@ -130,6 +133,58 @@ namespace XericLibrary.PostProcess
             float anchoredY = (screenPos.y - pivot.y) * rectSize.y;
 
             return new Vector2(anchoredX, anchoredY);
+        }
+
+        public Vector3 GetCenterWorldPosition()
+        {
+            return centerWorldPos;
+        }
+
+        public Vector2 GetScreenPosition(Camera camera = null)
+        {
+            if (camera == null)
+            {
+                camera = Camera.main;
+            }
+            if (camera == null)
+                return Vector2.zero;
+
+            return camera.WorldToScreenPoint(centerWorldPos);
+        }
+
+        public Vector2 GetViewportPosition(Camera camera = null)
+        {
+            if (camera == null)
+            {
+                camera = Camera.main;
+            }
+            if (camera == null)
+                return Vector2.zero;
+
+            return camera.WorldToViewportPoint(centerWorldPos);
+        }
+
+        public Bounds GetWorldBounds()
+        {
+            Bounds bounds = new Bounds(centerWorldPos, Vector3.zero);
+            bounds.Encapsulate(minWorldPos);
+            bounds.Encapsulate(maxWorldPos);
+            return bounds;
+        }
+
+        public float GetWorldVolume()
+        {
+            Vector3 size = maxWorldPos - minWorldPos;
+            return Mathf.Abs(size.x * size.y * size.z);
+        }
+
+        public float GetWorldArea()
+        {
+            Vector2 size = new Vector2(
+                Mathf.Abs(maxWorldPos.x - minWorldPos.x),
+                Mathf.Abs(maxWorldPos.z - minWorldPos.z)
+            );
+            return size.x * size.y;
         }
     }
 
@@ -464,6 +519,8 @@ namespace XericLibrary.PostProcess
                 {
                     island.centerPixelPos = Vector2.zero;
                     island.centerWorldPos = Vector3.zero;
+                    island.minWorldPos = Vector3.zero;
+                    island.maxWorldPos = Vector3.zero;
                     continue;
                 }
 
@@ -476,10 +533,25 @@ namespace XericLibrary.PostProcess
 
                 island.centerPixelPos = new Vector2(avgCol, avgRow);
 
-                int centerX = Mathf.Clamp(Mathf.RoundToInt(avgCol), 0, width - 1);
-                int centerY = Mathf.Clamp(Mathf.RoundToInt(avgRow), 0, height - 1);
-                int centerIndex = centerY * width + centerX;
+                Dictionary<int, int> rowPixelCounts = new Dictionary<int, int>();
+                foreach (var seg in island.segments)
+                {
+                    if (!rowPixelCounts.ContainsKey(seg.rowIndex))
+                    {
+                        rowPixelCounts[seg.rowIndex] = 0;
+                    }
+                    rowPixelCounts[seg.rowIndex] += seg.length;
+                }
 
+                int maxRowIndex = rowPixelCounts.OrderByDescending(kvp => kvp.Value).First().Key;
+
+                var segmentsInMaxRow = island.segments.Where(s => s.rowIndex == maxRowIndex).ToList();
+                MaterialSegment maxSegment = segmentsInMaxRow.OrderByDescending(s => s.length).First();
+
+                int centerX = (maxSegment.colStart + maxSegment.colEnd) / 2;
+                int centerY = maxRowIndex;
+
+                int centerIndex = centerY * width + centerX;
                 if (centerIndex >= 0 && centerIndex < m_DecodedDataArray.Length)
                 {
                     island.centerWorldPos = m_DecodedDataArray[centerIndex].worldPos;
@@ -487,6 +559,26 @@ namespace XericLibrary.PostProcess
                 else
                 {
                     island.centerWorldPos = Vector3.zero;
+                }
+
+                island.minWorldPos = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+                island.maxWorldPos = new Vector3(float.MinValue, float.MinValue, float.MinValue);
+
+                foreach (var seg in island.segments)
+                {
+                    for (int col = seg.colStart; col <= seg.colEnd; col++)
+                    {
+                        int index = seg.rowIndex * width + col;
+                        if (index < 0 || index >= m_DecodedDataArray.Length)
+                            continue;
+
+                        var pixelData = m_DecodedDataArray[index];
+                        if (pixelData.isValid && pixelData.matID == island.matID)
+                        {
+                            island.minWorldPos = Vector3.Min(island.minWorldPos, pixelData.worldPos);
+                            island.maxWorldPos = Vector3.Max(island.maxWorldPos, pixelData.worldPos);
+                        }
+                    }
                 }
             }
         }
