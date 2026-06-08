@@ -75,7 +75,9 @@ Shader "Hidden/XericLibrary/GeoLayerPicker/ScreenOverrideRect"
                 }
                 
                 // 将世界坐标映射为可见颜色
-                float3 debugColor = frac(col.rgb * 0.1) ^ col.a; 
+                float3 debugColor = frac(col.rgb * 0.1);
+                float matIDColor = frac(col.a * 0.05);
+                debugColor.r = lerp(debugColor.r, matIDColor, 0.5);
                 return float4(debugColor, 0.9); 
             }
             ENDHLSL

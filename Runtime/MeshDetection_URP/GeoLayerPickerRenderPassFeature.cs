@@ -102,29 +102,32 @@ namespace XericLibrary.PostProcess
             float normalizedX = centerPixelPos.x / texWidth;
             float normalizedY = centerPixelPos.y / texHeight;
 
-            return new Vector2(normalizedX, normalizedY);
+            float screenX = feature.sampleRect.x + normalizedX * feature.sampleRect.width;
+            float screenY = feature.sampleRect.y + normalizedY * feature.sampleRect.height;
+
+            return new Vector2(screenX, screenY);
         }
 
         public Vector2 GetCenterRectLocation(RectTransform rectTransform)
         {
-            var normalized = GetCenterRectLocation();
+            var screenPos = GetCenterRectLocation();
             
             Vector2 rectSize = rectTransform.rect.size;
-            float x = rectTransform.rect.x + normalized.x * rectSize.x;
-            float y = rectTransform.rect.y + normalized.y * rectSize.y;
+            float x = rectTransform.rect.x + screenPos.x * rectSize.x;
+            float y = rectTransform.rect.y + screenPos.y * rectSize.y;
 
             return new Vector2(x, y);
         }
 
         public Vector2 GetCenterRectAnchoredPosition(RectTransform rectTransform)
         {
-            var normalized = GetCenterRectLocation();
+            var screenPos = GetCenterRectLocation();
 
             Vector2 pivot = rectTransform.pivot;
             Vector2 rectSize = rectTransform.rect.size;
 
-            float anchoredX = (normalized.x - pivot.x) * rectSize.x;
-            float anchoredY = (normalized.y - pivot.y) * rectSize.y;
+            float anchoredX = (screenPos.x - pivot.x) * rectSize.x;
+            float anchoredY = (screenPos.y - pivot.y) * rectSize.y;
 
             return new Vector2(anchoredX, anchoredY);
         }
@@ -517,26 +520,22 @@ namespace XericLibrary.PostProcess
         private static readonly int DebugRectProp = Shader.PropertyToID("_DebugRect");
         private static readonly int DebugMainTex = Shader.PropertyToID("_MainTex");
 
-        class CustomRenderPass : ScriptableRenderPass
-        {
-            public Material passMaterial;
-            public RTHandle passRTHandle;
-            public RTHandle passReadbackBuffer;
-            public List<SubMeshDrawData> passDrawList;
-            public Rect passSampleRect;
-            public bool requestReadback;
-
-            // 屏幕调试 
-            public bool drawDebugOverlay;
-            public Material debugOverlayMaterial;
-            public RTHandle cameraColorTarget; // 用于获取屏幕渲染目标
-
-            private int m_MatIDProperty = Shader.PropertyToID("_MatID");
-
-            public override void Execute(ScriptableRenderContext context, ref RenderingData renderingData)
+        class PickRenderPass : ScriptableRenderPass
             {
-                if (passMaterial != null && passRTHandle != null && passDrawList != null && passDrawList.Count > 0)
+                public Material passMaterial;
+                public RTHandle passRTHandle;
+                public RTHandle passReadbackBuffer;
+                public List<SubMeshDrawData> passDrawList;
+                public Rect passSampleRect;
+                public bool requestReadback;
+
+                private int m_MatIDProperty = Shader.PropertyToID("_MatID");
+
+                public override void Execute(ScriptableRenderContext context, ref RenderingData renderingData)
                 {
+                    if (passMaterial == null || passRTHandle == null || passDrawList == null || passDrawList.Count == 0)
+                        return;
+
                     CommandBuffer cmd = CommandBufferPool.Get("GeoLayerPickBuffer");
 
                     cmd.SetRenderTarget(passRTHandle);
@@ -591,30 +590,76 @@ namespace XericLibrary.PostProcess
                             GeoLayerPickerRenderPassFeature.Instance.OnReadbackComplete);
                     }
                 }
+            }
 
-                if (drawDebugOverlay && debugOverlayMaterial != null && passRTHandle != null)
+            class DebugOverlayRenderPass : ScriptableRenderPass
+            {
+                public RTHandle sourceRTHandle;
+                public Material overlayMaterial;
+                public Rect sampleRect;
+
+                private static readonly int DebugRectProp = Shader.PropertyToID("_DebugRect");
+                private static readonly int DebugMainTex = Shader.PropertyToID("_MainTex");
+                private static bool s_HasLogged = false;
+
+                public override void Execute(ScriptableRenderContext context, ref RenderingData renderingData)
                 {
-                    var feature = GeoLayerPickerRenderPassFeature.Instance;
-                    if (feature == null) return;
+                    if (!s_HasLogged && GeoLayerPickerRenderPassFeature.Instance != null && GeoLayerPickerRenderPassFeature.Instance.enableDebugLog)
+                    {
+                        Debug.Log($"[GeoLayerPicker] DebugOverlayRenderPass.Execute called");
+                        Debug.Log($"  overlayMaterial: {(overlayMaterial != null ? "OK" : "null")}");
+                        Debug.Log($"  sourceRTHandle: {(sourceRTHandle != null ? "OK" : "null")}");
+                        Debug.Log($"  sampleRect: {sampleRect}");
+                        s_HasLogged = true;
+                    }
+
+                    if (overlayMaterial == null)
+                    {
+                        if (GeoLayerPickerRenderPassFeature.Instance != null && GeoLayerPickerRenderPassFeature.Instance.enableDebugLog)
+                        {
+                            Debug.LogWarning("[GeoLayerPicker] DebugOverlayRenderPass: overlayMaterial is null");
+                        }
+                        return;
+                    }
+
+                    if (sourceRTHandle == null)
+                    {
+                        if (GeoLayerPickerRenderPassFeature.Instance != null && GeoLayerPickerRenderPassFeature.Instance.enableDebugLog)
+                        {
+                            Debug.LogWarning("[GeoLayerPicker] DebugOverlayRenderPass: sourceRTHandle is null");
+                        }
+                        return;
+                    }
 
                     RTHandle currentColorTarget = renderingData.cameraData.renderer.cameraColorTargetHandle;
+                    if (currentColorTarget == null)
+                    {
+                        if (GeoLayerPickerRenderPassFeature.Instance != null && GeoLayerPickerRenderPassFeature.Instance.enableDebugLog)
+                        {
+                            Debug.LogWarning("[GeoLayerPicker] DebugOverlayRenderPass: currentColorTarget is null");
+                        }
+                        return;
+                    }
+
                     CommandBuffer debugCmd = CommandBufferPool.Get("GeoPickerDebugOverlay");
+                    debugCmd.Clear();
 
                     MaterialPropertyBlock debugMpb = new MaterialPropertyBlock();
-                    debugMpb.SetTexture(DebugMainTex, passRTHandle); 
+                    debugMpb.SetTexture(DebugMainTex, sourceRTHandle); 
                     
                     debugMpb.SetVector(DebugRectProp, new Vector4(
-                        feature.sampleRect.x,
-                        feature.sampleRect.y,
-                        feature.sampleRect.width,
-                        feature.sampleRect.height
+                        sampleRect.x,
+                        sampleRect.y,
+                        sampleRect.width,
+                        sampleRect.height
                     ));
 
                     CoreUtils.SetRenderTarget(debugCmd, currentColorTarget);
+                    debugCmd.SetViewport(new Rect(0, 0, renderingData.cameraData.camera.pixelWidth, renderingData.cameraData.camera.pixelHeight));
 
                     debugCmd.DrawProcedural(
                         Matrix4x4.identity,
-                        debugOverlayMaterial,
+                        overlayMaterial,
                         0,
                         MeshTopology.Triangles,
                         3,
@@ -626,18 +671,23 @@ namespace XericLibrary.PostProcess
                     CommandBufferPool.Release(debugCmd);
                 }
             }
-        }
 
-        private CustomRenderPass m_ScriptablePass;
+            private PickRenderPass m_PickPass;
+            private DebugOverlayRenderPass m_DebugOverlayPass;
 
         public override void Create()
         {
             Instance = this;
             m_IsDirty = true;
 
-            m_ScriptablePass = new CustomRenderPass
+            m_PickPass = new PickRenderPass
             {
                 renderPassEvent = RenderPassEvent.AfterRenderingOpaques
+            };
+
+            m_DebugOverlayPass = new DebugOverlayRenderPass
+            {
+                renderPassEvent = RenderPassEvent.AfterRenderingTransparents
             };
 
             // 释放旧的 RTHandle
@@ -692,8 +742,6 @@ namespace XericLibrary.PostProcess
 
         public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
         {
-            if (m_ScriptablePass == null || pickMaterial == null) return;
-
             if (m_IsDirty)
             {
                 RebuildDrawList();
@@ -721,20 +769,24 @@ namespace XericLibrary.PostProcess
                 shouldRead = true;
             }
 
-            // 后处理参数
-            m_ScriptablePass.passMaterial = pickMaterial;
-            m_ScriptablePass.passRTHandle = m_PickRTHandle;
-            m_ScriptablePass.passReadbackBuffer = m_ReadbackBufferHandle;
-            m_ScriptablePass.passDrawList = m_DrawList;
-            m_ScriptablePass.passSampleRect = sampleRect;
-            m_ScriptablePass.requestReadback = shouldRead;
+            if (m_PickPass != null && pickMaterial != null)
+            {
+                m_PickPass.passMaterial = pickMaterial;
+                m_PickPass.passRTHandle = m_PickRTHandle;
+                m_PickPass.passReadbackBuffer = m_ReadbackBufferHandle;
+                m_PickPass.passDrawList = m_DrawList;
+                m_PickPass.passSampleRect = sampleRect;
+                m_PickPass.requestReadback = shouldRead;
+                renderer.EnqueuePass(m_PickPass);
+            }
 
-            // 配置调试覆盖图参数
-            m_ScriptablePass.drawDebugOverlay = enableDebugLog; // 由 Inspector 开关控制
-            m_ScriptablePass.debugOverlayMaterial = m_DebugOverlayMaterial;
-            // m_ScriptablePass.cameraColorTarget = renderer.cameraColorTargetHandle; // 当前是注册阶段无法获取目标
-
-            renderer.EnqueuePass(m_ScriptablePass);
+            if (m_DebugOverlayPass != null && enableDebugLog && m_DebugOverlayMaterial != null)
+            {
+                m_DebugOverlayPass.sourceRTHandle = m_PickRTHandle;
+                m_DebugOverlayPass.overlayMaterial = m_DebugOverlayMaterial;
+                m_DebugOverlayPass.sampleRect = sampleRect;
+                renderer.EnqueuePass(m_DebugOverlayPass);
+            }
         }
 
         private void OnReadbackComplete(AsyncGPUReadbackRequest request)
