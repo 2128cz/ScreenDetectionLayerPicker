@@ -88,7 +88,7 @@ namespace XericLibrary.PostProcess
         #region 数据访问 API
 
         private PickedGeoData[] m_DecodedDataArray;
-        private int m_ValidDataCount = 0; 
+        private int m_ValidDataCount = 0;
 
         public IReadOnlyList<PickedGeoData> GetDecodedData() => m_DecodedDataArray;
 
@@ -118,7 +118,7 @@ namespace XericLibrary.PostProcess
 
             int index = pixelY * pickRTSize.x + pixelX;
             if (index < 0 || index >= m_DecodedDataArray.Length) return false;
-            
+
             data = m_DecodedDataArray[index];
             return true;
         }
@@ -136,38 +136,44 @@ namespace XericLibrary.PostProcess
 
         #region Inspector 配置参数
 
-        [Header("拾取材质与尺寸")] 
-        public Material pickMaterial;
+        [Header("拾取材质与尺寸")] public Material pickMaterial;
         public Vector2Int pickRTSize = new Vector2Int(64, 64);
 
-        [Header("采样区域设置")] 
-        public Rect sampleRect = new Rect(0f, 0f, 1f, 1f);
+        [Header("采样区域设置")] public Rect sampleRect = new Rect(0f, 0f, 1f, 1f);
 
-        [Header("读取频率控制")] 
-        [Range(0.01f, 1.0f)]
+        [Header("读取频率控制")] [Range(0.01f, 1.0f)]
         public float readbackInterval = 0.1f;
-        
-        [Header("调试设置")]
-        public bool enableDebugLog = false;
+
+        [Header("调试设置")] public bool enableDebugLog = false;
 
         #endregion
 
         // 核心修改：全面使用 RTHandle 替代 RenderTexture
-        private RTHandle m_PickRTHandle; 
-        private RTHandle m_ReadbackBufferHandle; 
-        
+        private RTHandle m_PickRTHandle;
+        private RTHandle m_ReadbackBufferHandle;
+
         private float m_TimeSinceLastReadback = 0f;
         private bool m_IsReadbackInProgress = false;
-        private int m_ReadbackFrameCounter = 0; 
+        private int m_ReadbackFrameCounter = 0;
+
+        // 调试覆盖图相关
+        private Material m_DebugOverlayMaterial;
+        private static readonly int DebugRectProp = Shader.PropertyToID("_DebugRect");
+        private static readonly int DebugMainTex = Shader.PropertyToID("_MainTex");
 
         class CustomRenderPass : ScriptableRenderPass
         {
             public Material passMaterial;
             public RTHandle passRTHandle;
-            public RTHandle passReadbackBuffer; 
+            public RTHandle passReadbackBuffer;
             public List<SubMeshDrawData> passDrawList;
             public Rect passSampleRect;
-            public bool requestReadback; 
+            public bool requestReadback;
+
+            // 屏幕调试 
+            public bool drawDebugOverlay;
+            public Material debugOverlayMaterial;
+            public RTHandle cameraColorTarget; // 用于获取屏幕渲染目标
 
             private int m_MatIDProperty = Shader.PropertyToID("_MatID");
 
@@ -223,11 +229,51 @@ namespace XericLibrary.PostProcess
                 context.ExecuteCommandBuffer(cmd);
                 CommandBufferPool.Release(cmd);
 
-                // 在 CommandBuffer 执行后，发起回读请求（读取隔离缓冲区）
                 if (requestReadback && passReadbackBuffer != null)
                 {
                     AsyncGPUReadback.Request(passReadbackBuffer.rt, 0, TextureFormat.RGBAFloat,
                         GeoLayerPickerRenderPassFeature.Instance.OnReadbackComplete);
+                }
+
+                // --- 绘制全屏调试图 ---
+                if (drawDebugOverlay && debugOverlayMaterial != null && passRTHandle != null)
+                {
+                    var feature = GeoLayerPickerRenderPassFeature.Instance;
+                    if (feature == null) return;
+
+                    RTHandle currentColorTarget = renderingData.cameraData.renderer.cameraColorTargetHandle;
+                    CommandBuffer debugCmd = CommandBufferPool.Get("GeoPickerDebugOverlay");
+
+                    // 【核心 1】：使用 MaterialPropertyBlock 隔离参数
+                    MaterialPropertyBlock mpb = new MaterialPropertyBlock();
+                    
+                    // 【修正 1】：直接使用字符串名称和 RTHandle 对象本身（RTHandle 隐式转为 Texture）
+                    // 彻底避开 nameID (RenderTargetIdentifier) 的类型转换坑！
+                    mpb.SetTexture(DebugMainTex, passRTHandle); 
+                    
+                    mpb.SetVector(DebugRectProp, new Vector4(
+                        feature.sampleRect.x,
+                        feature.sampleRect.y,
+                        feature.sampleRect.width,
+                        feature.sampleRect.height
+                    ));
+
+                    // 设置渲染目标为当前屏幕
+                    CoreUtils.SetRenderTarget(debugCmd, currentColorTarget);
+
+                    // 【修正 2】：DrawProcedural 必须显式传入 instanceCount (1) 作为第 6 个参数！
+                    debugCmd.DrawProcedural(
+                        Matrix4x4.identity,      // 1. matrix
+                        debugOverlayMaterial,    // 2. material
+                        0,                       // 3. shaderPass
+                        MeshTopology.Triangles,  // 4. topology
+                        3,                       // 5. vertexCount (全屏三角形)
+                        1,                       // 6. instanceCount (必须显式写 1！)
+                        mpb                      // 7. MaterialPropertyBlock
+                    );
+
+                    context.ExecuteCommandBuffer(debugCmd);
+                    CommandBufferPool.Release(debugCmd);
                 }
             }
         }
@@ -245,19 +291,28 @@ namespace XericLibrary.PostProcess
             };
 
             // 释放旧的 RTHandle
-            if (m_PickRTHandle != null) { m_PickRTHandle.Release(); m_PickRTHandle = null; }
-            if (m_ReadbackBufferHandle != null) { m_ReadbackBufferHandle.Release(); m_ReadbackBufferHandle = null; }
+            if (m_PickRTHandle != null)
+            {
+                m_PickRTHandle.Release();
+                m_PickRTHandle = null;
+            }
+
+            if (m_ReadbackBufferHandle != null)
+            {
+                m_ReadbackBufferHandle.Release();
+                m_ReadbackBufferHandle = null;
+            }
 
             // 分配新的 RTHandle
             m_PickRTHandle = RTHandles.Alloc(
-                pickRTSize.x, pickRTSize.y, 
-                colorFormat: GraphicsFormat.R32G32B32A32_SFloat, 
+                pickRTSize.x, pickRTSize.y,
+                colorFormat: GraphicsFormat.R32G32B32A32_SFloat,
                 filterMode: FilterMode.Point,
                 name: "GeoLayerPickRT"
             );
 
             m_ReadbackBufferHandle = RTHandles.Alloc(
-                pickRTSize.x, pickRTSize.y, 
+                pickRTSize.x, pickRTSize.y,
                 colorFormat: GraphicsFormat.R32G32B32A32_SFloat,
                 filterMode: FilterMode.Point,
                 name: "GeoLayerReadbackBuffer"
@@ -267,7 +322,21 @@ namespace XericLibrary.PostProcess
             if (m_DecodedDataArray == null || m_DecodedDataArray.Length != requiredLength)
             {
                 m_DecodedDataArray = new PickedGeoData[requiredLength];
-                if(enableDebugLog) Debug.Log($"[GeoLayerPicker] 数组重新初始化，长度: {requiredLength}");
+                if (enableDebugLog) Debug.Log($"[GeoLayerPicker] 数组重新初始化，长度: {requiredLength}");
+            }
+
+            // 初始化调试材质
+            if (m_DebugOverlayMaterial == null)
+            {
+                Shader overlayShader = Shader.Find("Hidden/XericLibrary/ScreenOverrideRect");
+                if (overlayShader != null)
+                {
+                    m_DebugOverlayMaterial = CoreUtils.CreateEngineMaterial(overlayShader);
+                }
+                else
+                {
+                    Debug.LogError("[GeoLayerPicker] 找不到调试 Shader: Hidden/XericLibrary/Debug/GeoPickerOverlay");
+                }
             }
         }
 
@@ -279,14 +348,14 @@ namespace XericLibrary.PostProcess
             {
                 RebuildDrawList();
                 m_IsDirty = false;
-                if(enableDebugLog) Debug.Log($"[GeoLayerPicker] DrawList 重建完成，包含 {m_DrawList.Count} 个 SubMesh。");
+                if (enableDebugLog) Debug.Log($"[GeoLayerPicker] DrawList 重建完成，包含 {m_DrawList.Count} 个 SubMesh。");
             }
 
             m_ReadbackFrameCounter++;
-            if (m_IsReadbackInProgress && m_ReadbackFrameCounter > 60) 
+            if (m_IsReadbackInProgress && m_ReadbackFrameCounter > 60)
             {
                 Debug.LogWarning("[GeoLayerPicker] AsyncGPUReadback 疑似卡死，强制重置并清理队列。");
-                AsyncGPUReadback.WaitAllRequests(); 
+                AsyncGPUReadback.WaitAllRequests();
                 m_IsReadbackInProgress = false;
                 m_ReadbackFrameCounter = 0;
             }
@@ -298,16 +367,22 @@ namespace XericLibrary.PostProcess
             {
                 m_TimeSinceLastReadback = 0f;
                 m_IsReadbackInProgress = true;
-                m_ReadbackFrameCounter = 0; 
+                m_ReadbackFrameCounter = 0;
                 shouldRead = true;
             }
 
+            // 后处理参数
             m_ScriptablePass.passMaterial = pickMaterial;
             m_ScriptablePass.passRTHandle = m_PickRTHandle;
-            m_ScriptablePass.passReadbackBuffer = m_ReadbackBufferHandle; 
+            m_ScriptablePass.passReadbackBuffer = m_ReadbackBufferHandle;
             m_ScriptablePass.passDrawList = m_DrawList;
             m_ScriptablePass.passSampleRect = sampleRect;
             m_ScriptablePass.requestReadback = shouldRead;
+
+            // 配置调试覆盖图参数
+            m_ScriptablePass.drawDebugOverlay = enableDebugLog; // 由 Inspector 开关控制
+            m_ScriptablePass.debugOverlayMaterial = m_DebugOverlayMaterial;
+            // m_ScriptablePass.cameraColorTarget = renderer.cameraColorTargetHandle; // 获取当前屏幕目标
 
             renderer.EnqueuePass(m_ScriptablePass);
         }
@@ -316,7 +391,7 @@ namespace XericLibrary.PostProcess
         {
             m_IsReadbackInProgress = false;
 
-            if (request.hasError || m_DecodedDataArray == null) 
+            if (request.hasError || m_DecodedDataArray == null)
             {
                 Debug.LogError("[GeoLayerPicker] Readback 发生错误或数组为空！");
                 return;
@@ -324,14 +399,14 @@ namespace XericLibrary.PostProcess
 
             var rawData = request.GetData<Color>();
             if (rawData.Length == 0) return;
-            
+
             // 修复：使用 m_ReadbackBufferHandle.rt 获取宽高
             int width = m_ReadbackBufferHandle.rt.width;
             int height = m_ReadbackBufferHandle.rt.height;
-            int count = m_DecodedDataArray.Length; 
+            int count = m_DecodedDataArray.Length;
 
-            bool flipY = SystemInfo.graphicsUVStartsAtTop; 
-            m_ValidDataCount = 0; 
+            bool flipY = SystemInfo.graphicsUVStartsAtTop;
+            m_ValidDataCount = 0;
 
             for (int i = 0; i < count; i++)
             {
@@ -341,15 +416,15 @@ namespace XericLibrary.PostProcess
                 int sourceY = flipY ? (height - 1 - y) : y;
                 int sourceIndex = sourceY * width + x;
 
-                if (sourceIndex < 0 || sourceIndex >= rawData.Length) 
+                if (sourceIndex < 0 || sourceIndex >= rawData.Length)
                 {
                     m_DecodedDataArray[i] = new PickedGeoData { isValid = false };
                     continue;
                 }
 
                 Color pixel = rawData[sourceIndex];
-        
-                if (pixel.a > 0.5f) 
+
+                if (pixel.a > 0.5f)
                 {
                     m_DecodedDataArray[i] = new PickedGeoData
                     {
@@ -364,7 +439,7 @@ namespace XericLibrary.PostProcess
                     m_DecodedDataArray[i] = new PickedGeoData { isValid = false, matID = 0 };
                 }
             }
-            
+
             if (enableDebugLog)
             {
                 Debug.Log($"[GeoLayerPicker] 回读完成！总像素: {count}, 有效拾取像素: {m_ValidDataCount}");
@@ -395,16 +470,25 @@ namespace XericLibrary.PostProcess
         protected override void Dispose(bool disposing)
         {
             // 修复：正确释放 RTHandle 并置空
-            if (m_PickRTHandle != null) 
-            { 
-                m_PickRTHandle.Release(); 
-                m_PickRTHandle = null; 
+            if (m_PickRTHandle != null)
+            {
+                m_PickRTHandle.Release();
+                m_PickRTHandle = null;
             }
-            if (m_ReadbackBufferHandle != null) 
-            { 
-                m_ReadbackBufferHandle.Release(); 
-                m_ReadbackBufferHandle = null; 
+
+            if (m_ReadbackBufferHandle != null)
+            {
+                m_ReadbackBufferHandle.Release();
+                m_ReadbackBufferHandle = null;
             }
+
+            // 释放调试材质
+            if (m_DebugOverlayMaterial != null)
+            {
+                CoreUtils.Destroy(m_DebugOverlayMaterial);
+                m_DebugOverlayMaterial = null;
+            }
+
             if (Instance == this) Instance = null;
         }
     }

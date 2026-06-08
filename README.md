@@ -1,2 +1,3 @@
 # Unity 屏幕空间后处理阶段检查器-模型数据提取器
 
+依赖 [MaterialFunctionLibrary](https://gitea.xeric.cc/LiRuochen_WorkFlow/MaterialFunctionLibrary) 插件。
