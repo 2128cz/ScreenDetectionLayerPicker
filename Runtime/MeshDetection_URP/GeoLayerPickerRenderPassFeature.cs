@@ -1,3 +1,4 @@
+using System;
 using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
@@ -87,6 +88,45 @@ namespace XericLibrary.PostProcess
         {
             var mat = GetMaterial();
             return mat != null ? mat.name : "Unknown";
+        }
+
+        public Vector2 GetCenterRectLocation()
+        {
+            var feature = GeoLayerPickerRenderPassFeature.Instance;
+            if (feature == null)
+                return Vector2.zero;
+
+            float texWidth = feature.pickRTSize.x;
+            float texHeight = feature.pickRTSize.y;
+
+            float normalizedX = centerPixelPos.x / texWidth;
+            float normalizedY = centerPixelPos.y / texHeight;
+
+            return new Vector2(normalizedX, normalizedY);
+        }
+
+        public Vector2 GetCenterRectLocation(RectTransform rectTransform)
+        {
+            var normalized = GetCenterRectLocation();
+            
+            Vector2 rectSize = rectTransform.rect.size;
+            float x = rectTransform.rect.x + normalized.x * rectSize.x;
+            float y = rectTransform.rect.y + normalized.y * rectSize.y;
+
+            return new Vector2(x, y);
+        }
+
+        public Vector2 GetCenterRectAnchoredPosition(RectTransform rectTransform)
+        {
+            var normalized = GetCenterRectLocation();
+
+            Vector2 pivot = rectTransform.pivot;
+            Vector2 rectSize = rectTransform.rect.size;
+
+            float anchoredX = (normalized.x - pivot.x) * rectSize.x;
+            float anchoredY = (normalized.y - pivot.y) * rectSize.y;
+
+            return new Vector2(anchoredX, anchoredY);
         }
     }
 
@@ -495,79 +535,63 @@ namespace XericLibrary.PostProcess
 
             public override void Execute(ScriptableRenderContext context, ref RenderingData renderingData)
             {
-                if (passMaterial == null || passRTHandle == null || passDrawList == null || passDrawList.Count == 0)
-                    return;
-
-                CommandBuffer cmd = CommandBufferPool.Get("GeoLayerPickBuffer");
-
-                // 手动设置渲染目标并清理，避免 URP 隐式状态干扰
-                cmd.SetRenderTarget(passRTHandle);
-                cmd.ClearRenderTarget(true, true, new Color(0, 0, 0, 0));
-                
-                if (drawDebugOverlay)
+                if (passMaterial != null && passRTHandle != null && passDrawList != null && passDrawList.Count > 0)
                 {
-                    Debug.Log($"[GeoLayerPicker] 开始绘制 {passDrawList.Count} 个SubMesh");
-                    Debug.Log($"[GeoLayerPicker] 渲染目标: {passRTHandle.rt.name}, 尺寸: {passRTHandle.rt.width}x{passRTHandle.rt.height}");
-                }
+                    CommandBuffer cmd = CommandBufferPool.Get("GeoLayerPickBuffer");
 
-                Camera cam = renderingData.cameraData.camera;
-                Matrix4x4 viewMatrix = cam.worldToCameraMatrix;
-                Matrix4x4 projMatrix = cam.projectionMatrix;
+                    cmd.SetRenderTarget(passRTHandle);
+                    cmd.ClearRenderTarget(true, true, new Color(0, 0, 0, 0));
 
-                float ndcXMin = passSampleRect.x * 2f - 1f;
-                float ndcXMax = (passSampleRect.x + passSampleRect.width) * 2f - 1f;
-                float ndcYMin = passSampleRect.y * 2f - 1f;
-                float ndcYMax = (passSampleRect.y + passSampleRect.height) * 2f - 1f;
+                    Camera cam = renderingData.cameraData.camera;
+                    Matrix4x4 viewMatrix = cam.worldToCameraMatrix;
+                    Matrix4x4 projMatrix = cam.projectionMatrix;
 
-                float scaleX = 2f / (ndcXMax - ndcXMin);
-                float scaleY = 2f / (ndcYMax - ndcYMin);
-                float offsetX = -1f - ndcXMin * scaleX;
-                float offsetY = -1f - ndcYMin * scaleY;
+                    float ndcXMin = passSampleRect.x * 2f - 1f;
+                    float ndcXMax = (passSampleRect.x + passSampleRect.width) * 2f - 1f;
+                    float ndcYMin = passSampleRect.y * 2f - 1f;
+                    float ndcYMax = (passSampleRect.y + passSampleRect.height) * 2f - 1f;
 
-                projMatrix.m00 *= scaleX;
-                projMatrix.m11 *= scaleY;
-                projMatrix.m02 += offsetX;
-                projMatrix.m12 += offsetY;
+                    float scaleX = 2f / (ndcXMax - ndcXMin);
+                    float scaleY = 2f / (ndcYMax - ndcYMin);
+                    float offsetX = -1f - ndcXMin * scaleX;
+                    float offsetY = -1f - ndcYMin * scaleY;
 
-                projMatrix = GL.GetGPUProjectionMatrix(projMatrix, true);
-                cmd.SetViewProjectionMatrices(viewMatrix, projMatrix);
-                cmd.SetViewport(new Rect(0, 0, passRTHandle.rt.width, passRTHandle.rt.height));
+                    projMatrix.m00 *= scaleX;
+                    projMatrix.m11 *= scaleY;
+                    projMatrix.m02 += offsetX;
+                    projMatrix.m12 += offsetY;
 
-                MaterialPropertyBlock drawMpb = new MaterialPropertyBlock();
-                
-                for (int i = 0; i < passDrawList.Count; i++)
-                {
-                    var data = passDrawList[i];
+                    projMatrix = GL.GetGPUProjectionMatrix(projMatrix, true);
+                    cmd.SetViewProjectionMatrices(viewMatrix, projMatrix);
+                    cmd.SetViewport(new Rect(0, 0, passRTHandle.rt.width, passRTHandle.rt.height));
+
+                    MaterialPropertyBlock drawMpb = new MaterialPropertyBlock();
                     
-                    drawMpb.SetInt(m_MatIDProperty, data.uniqueMatID);
-                    cmd.DrawMesh(data.mesh, data.matrix, passMaterial, data.subMeshIndex, 0, drawMpb);
-                    
-                    if (GeoLayerPickerRenderPassFeature.Instance != null && 
-                        GeoLayerPickerRenderPassFeature.Instance.enableDebugLog && 
-                        (i == 0 || i == passDrawList.Count - 1))
+                    for (int i = 0; i < passDrawList.Count; i++)
                     {
-                        Debug.Log($"[GeoLayerPicker] 绘制第{i}个SubMesh, MatID={data.uniqueMatID}, 材质={data.material?.name ?? "null"}");
+                        var data = passDrawList[i];
+                        
+                        drawMpb.SetInt(m_MatIDProperty, data.uniqueMatID);
+                        cmd.DrawMesh(data.mesh, data.matrix, passMaterial, data.subMeshIndex, 0, drawMpb);
+                    }
+                    
+                    cmd.SetViewProjectionMatrices(viewMatrix, renderingData.cameraData.GetProjectionMatrix());
+
+                    if (requestReadback && passReadbackBuffer != null)
+                    {
+                        cmd.Blit(passRTHandle, passReadbackBuffer);
+                    }
+
+                    context.ExecuteCommandBuffer(cmd);
+                    CommandBufferPool.Release(cmd);
+
+                    if (requestReadback && passReadbackBuffer != null)
+                    {
+                        AsyncGPUReadback.Request(passReadbackBuffer.rt, 0, TextureFormat.RGBAFloat,
+                            GeoLayerPickerRenderPassFeature.Instance.OnReadbackComplete);
                     }
                 }
-                
-                cmd.SetViewProjectionMatrices(viewMatrix, renderingData.cameraData.GetProjectionMatrix());
 
-                // 如果本帧需要回读，将数据安全地 Blit 到隔离缓冲区
-                if (requestReadback && passReadbackBuffer != null)
-                {
-                    cmd.Blit(passRTHandle, passReadbackBuffer);
-                }
-
-                context.ExecuteCommandBuffer(cmd);
-                CommandBufferPool.Release(cmd);
-
-                if (requestReadback && passReadbackBuffer != null)
-                {
-                    AsyncGPUReadback.Request(passReadbackBuffer.rt, 0, TextureFormat.RGBAFloat,
-                        GeoLayerPickerRenderPassFeature.Instance.OnReadbackComplete);
-                }
-
-                // --- 绘制全屏调试图 ---
                 if (drawDebugOverlay && debugOverlayMaterial != null && passRTHandle != null)
                 {
                     var feature = GeoLayerPickerRenderPassFeature.Instance;
@@ -576,11 +600,7 @@ namespace XericLibrary.PostProcess
                     RTHandle currentColorTarget = renderingData.cameraData.renderer.cameraColorTargetHandle;
                     CommandBuffer debugCmd = CommandBufferPool.Get("GeoPickerDebugOverlay");
 
-                    // 【核心 1】：使用 MaterialPropertyBlock 隔离参数
                     MaterialPropertyBlock debugMpb = new MaterialPropertyBlock();
-                    
-                    // 【修正 1】：直接使用字符串名称和 RTHandle 对象本身（RTHandle 隐式转为 Texture）
-                    // 彻底避开 nameID (RenderTargetIdentifier) 的类型转换坑！
                     debugMpb.SetTexture(DebugMainTex, passRTHandle); 
                     
                     debugMpb.SetVector(DebugRectProp, new Vector4(
@@ -590,18 +610,16 @@ namespace XericLibrary.PostProcess
                         feature.sampleRect.height
                     ));
 
-                    // 设置渲染目标为当前屏幕
                     CoreUtils.SetRenderTarget(debugCmd, currentColorTarget);
 
-                    // 【修正 2】：DrawProcedural 必须显式传入 instanceCount (1) 作为第 6 个参数！
                     debugCmd.DrawProcedural(
-                        Matrix4x4.identity,      // 1. matrix
-                        debugOverlayMaterial,    // 2. material
-                        0,                       // 3. shaderPass
-                        MeshTopology.Triangles,  // 4. topology
-                        3,                       // 5. vertexCount (全屏三角形)
-                        1,                       // 6. instanceCount (必须显式写 1！)
-                        debugMpb                      // 7. MaterialPropertyBlock
+                        Matrix4x4.identity,
+                        debugOverlayMaterial,
+                        0,
+                        MeshTopology.Triangles,
+                        3,
+                        1,
+                        debugMpb
                     );
 
                     context.ExecuteCommandBuffer(debugCmd);
@@ -758,17 +776,10 @@ namespace XericLibrary.PostProcess
 
                 if (pixel.a > 0.5f)
                 {
-                    int decodedMatID = Mathf.RoundToInt(pixel.a);
-                    
-                    if (enableDebugLog && i == 0)
-                    {
-                        Debug.Log($"[GeoLayerPicker] 像素({x},{y}), alpha={pixel.a:F4}, 解码MatID={decodedMatID}");
-                    }
-                    
                     m_DecodedDataArray[i] = new PickedGeoData
                     {
                         isValid = true,
-                        matID = decodedMatID,
+                        matID = Mathf.RoundToInt(pixel.a),
                         worldPos = new Vector3(pixel.r, pixel.g, pixel.b)
                     };
                     m_ValidDataCount++;
@@ -776,31 +787,6 @@ namespace XericLibrary.PostProcess
                 else
                 {
                     m_DecodedDataArray[i] = new PickedGeoData { isValid = false, matID = 0 };
-                }
-            }
-
-            if (enableDebugLog)
-            {
-                Debug.Log($"[GeoLayerPicker] 回读完成！总像素: {count}, 有效拾取像素: {m_ValidDataCount}");
-                
-                Dictionary<int, int> matIDCounts = new Dictionary<int, int>();
-                foreach (var data in m_DecodedDataArray)
-                {
-                    if (data.isValid)
-                    {
-                        if (!matIDCounts.ContainsKey(data.matID))
-                        {
-                            matIDCounts[data.matID] = 0;
-                        }
-                        matIDCounts[data.matID]++;
-                    }
-                }
-                
-                Debug.Log("[GeoLayerPicker] 材质ID分布:");
-                foreach (var kvp in matIDCounts)
-                {
-                    var mat = GetMaterialByID(kvp.Key);
-                    Debug.Log($"  MatID={kvp.Key} ({mat?.name ?? "未知"}): {kvp.Value} 像素");
                 }
             }
 
