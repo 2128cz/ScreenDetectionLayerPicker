@@ -3,6 +3,7 @@ using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
 using System.Collections.Generic;
 using Unity.Collections;
+using UnityEngine.Experimental.Rendering;
 using XericLibrary.Runtime.MacroLibrary;
 
 #if UNITY_2022_1_OR_NEWER
@@ -26,34 +27,24 @@ namespace XericLibrary.PostProcess
     [System.Serializable]
     public struct PickedGeoData
     {
-        /// <summary> 材质/SubMesh 的唯一 ID，0 表示背景 </summary>
         public int matID;
-
-        /// <summary> 该像素点对应的世界坐标 </summary>
         public Vector3 worldPos;
-
-        /// <summary> 是否拾取到了有效的地质层 </summary>
         public bool isValid;
     }
 
     /// <summary>
     /// 地质层拾取 RenderFeature。
-    /// 负责在 URP 管线中注入自定义 RenderPass，管理模型，并自动在后台降频读取、解码 GPU 数据。
     /// </summary>
     public class GeoLayerPickerRenderPassFeature : ScriptableRendererFeature
     {
         #region 静态单例与外部管理 API
 
-        /// <summary>
-        /// 当前激活的 Feature 实例
-        /// </summary>
         public static GeoLayerPickerRenderPassFeature Instance { get; private set; }
 
         private readonly List<MeshFilter> m_GeoMeshes = new List<MeshFilter>();
         private readonly List<SubMeshDrawData> m_DrawList = new List<SubMeshDrawData>();
         private bool m_IsDirty = true;
 
-        /// <summary> 添加需要检查的场景模型对象 </summary>
         public void AddGeoMesh(MeshFilter meshFilter)
         {
             if (meshFilter != null && !m_GeoMeshes.Contains(meshFilter))
@@ -63,7 +54,6 @@ namespace XericLibrary.PostProcess
             }
         }
 
-        /// <summary> 批量添加需要检查的场景模型对象 </summary>
         public void AddGeoMeshes(IEnumerable<MeshFilter> meshFilters)
         {
             if (meshFilters == null) return;
@@ -77,13 +67,11 @@ namespace XericLibrary.PostProcess
             }
         }
 
-        /// <summary> 移除指定的场景模型对象 </summary>
         public void RemoveGeoMesh(MeshFilter meshFilter)
         {
             if (m_GeoMeshes.Remove(meshFilter)) m_IsDirty = true;
         }
 
-        /// <summary> 清空所有已添加的场景模型对象 </summary>
         public void ClearGeoMeshes()
         {
             if (m_GeoMeshes.Count > 0)
@@ -93,30 +81,21 @@ namespace XericLibrary.PostProcess
             }
         }
 
-        /// <summary> 获取当前所有已添加的场景模型对象（只读） </summary>
         public IReadOnlyList<MeshFilter> GetGeoMeshes() => m_GeoMeshes;
 
         #endregion
 
-        #region 数据访问 API (供外部 UI 或逻辑调用)
+        #region 数据访问 API
 
-        // 内部维护的解码后的数据数组 (大小等于 pickRTSize.x * pickRTSize.y)
         private PickedGeoData[] m_DecodedDataArray;
+        private int m_ValidDataCount = 0; 
 
-        /// <summary>
-        /// 获取当前帧已解码的拾取数据数组。
-        /// 数组按行优先排列 (Index = y * width + x)。
-        /// </summary>
         public IReadOnlyList<PickedGeoData> GetDecodedData() => m_DecodedDataArray;
 
-        /// <summary>
-        /// 获取一列的数据
-        /// </summary>
-        /// <param name="column"></param>
-        /// <param name="listData"></param>
         public void GetColumnData(int column, List<PickedGeoData> listData)
         {
             listData.Clear();
+            if (m_DecodedDataArray == null) return;
             column = MacroMath.ClampToInt(column, 0, pickRTSize.x);
             for (int i = 0; i < pickRTSize.y; i++)
             {
@@ -124,86 +103,84 @@ namespace XericLibrary.PostProcess
             }
         }
 
-        /// <summary>
-        /// 根据归一化的屏幕坐标 (0~1) 获取拾取数据。
-        /// 会自动映射到 sampleRect 和 pickRTSize 范围内。
-        /// </summary>
-        /// <param name="normalizedScreenPos">归一化屏幕坐标 (左下角为 0,0)</param>
-        /// <param name="data">输出的拾取数据</param>
-        /// <returns>是否成功获取（坐标是否在采样区域内）</returns>
         public bool TryGetPickedData(Vector2 normalizedScreenPos, out PickedGeoData data)
         {
             data = default;
             if (m_DecodedDataArray == null || m_DecodedDataArray.Length == 0) return false;
 
-            // 1. 将屏幕坐标转换为相对于 sampleRect 的局部坐标 (0~1)
             float localX = (normalizedScreenPos.x - sampleRect.x) / sampleRect.width;
             float localY = (normalizedScreenPos.y - sampleRect.y) / sampleRect.height;
 
-            // 2. 检查是否超出了采样区域
             if (localX < 0f || localX > 1f || localY < 0f || localY > 1f) return false;
 
-            // 3. 映射到 RT 的像素坐标
             int pixelX = Mathf.Clamp(Mathf.FloorToInt(localX * pickRTSize.x), 0, pickRTSize.x - 1);
             int pixelY = Mathf.Clamp(Mathf.FloorToInt(localY * pickRTSize.y), 0, pickRTSize.y - 1);
 
-            // 4. 获取数据
             int index = pixelY * pickRTSize.x + pixelX;
+            if (index < 0 || index >= m_DecodedDataArray.Length) return false;
+            
             data = m_DecodedDataArray[index];
             return true;
+        }
+
+        public void ForceReadbackSync()
+        {
+            // 修复：使用 m_ReadbackBufferHandle 进行同步等待
+            if (m_ReadbackBufferHandle != null)
+            {
+                AsyncGPUReadback.WaitAllRequests();
+            }
         }
 
         #endregion
 
         #region Inspector 配置参数
 
-        [Header("拾取材质与尺寸")] [Tooltip("用于渲染地质层 ID 和坐标的 HDR 材质球")]
+        [Header("拾取材质与尺寸")] 
         public Material pickMaterial;
-
-        [Tooltip("渲染目标纹理的尺寸，越小性能越好（例如 64x64）")]
         public Vector2Int pickRTSize = new Vector2Int(64, 64);
 
-        [Header("采样区域设置")] [Tooltip("定义屏幕上的采样区域 (归一化坐标 0~1)。\n例如: X=0.25, Y=0.25, W=0.5, H=0.5 表示只渲染屏幕正中间一半的区域。")]
+        [Header("采样区域设置")] 
         public Rect sampleRect = new Rect(0f, 0f, 1f, 1f);
 
-        [Header("读取频率控制")] [Tooltip("每隔多少秒从 GPU 读取一次数据 (例如 0.1 秒 = 10 FPS)")] [Range(0.01f, 1.0f)]
+        [Header("读取频率控制")] 
+        [Range(0.01f, 1.0f)]
         public float readbackInterval = 0.1f;
+        
+        [Header("调试设置")]
+        public bool enableDebugLog = false;
 
         #endregion
 
-        private RenderTexture m_PickRT;
+        // 核心修改：全面使用 RTHandle 替代 RenderTexture
+        private RTHandle m_PickRTHandle; 
+        private RTHandle m_ReadbackBufferHandle; 
+        
         private float m_TimeSinceLastReadback = 0f;
         private bool m_IsReadbackInProgress = false;
+        private int m_ReadbackFrameCounter = 0; 
 
-        /// <summary>
-        /// 自定义 RenderPass
-        /// </summary>
         class CustomRenderPass : ScriptableRenderPass
         {
             public Material passMaterial;
-            public RenderTexture passRT;
+            public RTHandle passRTHandle;
+            public RTHandle passReadbackBuffer; 
             public List<SubMeshDrawData> passDrawList;
             public Rect passSampleRect;
-            public bool requestReadback; // 标记本帧是否需要触发异步读取
+            public bool requestReadback; 
 
             private int m_MatIDProperty = Shader.PropertyToID("_MatID");
 
-            public override void OnCameraSetup(CommandBuffer cmd, ref RenderingData renderingData)
-            {
-                if (passRT != null)
-                {
-                    ConfigureTarget(new RenderTargetIdentifier(passRT));
-                    // 清屏为 0,0,0,0 (背景 ID 为 0)
-                    ConfigureClear(ClearFlag.All, Color.clear);
-                }
-            }
-
             public override void Execute(ScriptableRenderContext context, ref RenderingData renderingData)
             {
-                if (passMaterial == null || passRT == null || passDrawList == null || passDrawList.Count == 0)
+                if (passMaterial == null || passRTHandle == null || passDrawList == null || passDrawList.Count == 0)
                     return;
 
                 CommandBuffer cmd = CommandBufferPool.Get("GeoLayerPickBuffer");
+
+                // 手动设置渲染目标并清理，避免 URP 隐式状态干扰
+                cmd.SetRenderTarget(passRTHandle);
+                cmd.ClearRenderTarget(true, true, Color.clear);
 
                 Camera cam = renderingData.cameraData.camera;
                 Matrix4x4 viewMatrix = cam.worldToCameraMatrix;
@@ -226,7 +203,7 @@ namespace XericLibrary.PostProcess
 
                 projMatrix = GL.GetGPUProjectionMatrix(projMatrix, true);
                 cmd.SetViewProjectionMatrices(viewMatrix, projMatrix);
-                cmd.SetViewport(new Rect(0, 0, passRT.width, passRT.height));
+                cmd.SetViewport(new Rect(0, 0, passRTHandle.rt.width, passRTHandle.rt.height));
 
                 for (int i = 0; i < passDrawList.Count; i++)
                 {
@@ -236,19 +213,22 @@ namespace XericLibrary.PostProcess
                 }
 
                 cmd.SetViewProjectionMatrices(viewMatrix, renderingData.cameraData.GetProjectionMatrix());
+
+                // 如果本帧需要回读，将数据安全地 Blit 到隔离缓冲区
+                if (requestReadback && passReadbackBuffer != null)
+                {
+                    cmd.Blit(passRTHandle, passReadbackBuffer);
+                }
+
                 context.ExecuteCommandBuffer(cmd);
                 CommandBufferPool.Release(cmd);
 
-                // 【核心】：如果计时器到了，在这里发起异步 GPU 回读
-                if (requestReadback)
+                // 在 CommandBuffer 执行后，发起回读请求（读取隔离缓冲区）
+                if (requestReadback && passReadbackBuffer != null)
                 {
-                    AsyncGPUReadback.Request(passRT, 0, TextureFormat.RGBAFloat,
+                    AsyncGPUReadback.Request(passReadbackBuffer.rt, 0, TextureFormat.RGBAFloat,
                         GeoLayerPickerRenderPassFeature.Instance.OnReadbackComplete);
                 }
-            }
-
-            public override void OnCameraCleanup(CommandBuffer cmd)
-            {
             }
         }
 
@@ -264,15 +244,31 @@ namespace XericLibrary.PostProcess
                 renderPassEvent = RenderPassEvent.AfterRenderingOpaques
             };
 
-            if (m_PickRT != null) m_PickRT.Release();
-            m_PickRT = new RenderTexture(pickRTSize.x, pickRTSize.y, 0, RenderTextureFormat.ARGBFloat)
-            {
-                filterMode = FilterMode.Point
-            };
-            m_PickRT.Create();
+            // 释放旧的 RTHandle
+            if (m_PickRTHandle != null) { m_PickRTHandle.Release(); m_PickRTHandle = null; }
+            if (m_ReadbackBufferHandle != null) { m_ReadbackBufferHandle.Release(); m_ReadbackBufferHandle = null; }
 
-            // 初始化解码数组
-            m_DecodedDataArray = new PickedGeoData[pickRTSize.x * pickRTSize.y];
+            // 分配新的 RTHandle
+            m_PickRTHandle = RTHandles.Alloc(
+                pickRTSize.x, pickRTSize.y, 
+                colorFormat: GraphicsFormat.R32G32B32A32_SFloat, 
+                filterMode: FilterMode.Point,
+                name: "GeoLayerPickRT"
+            );
+
+            m_ReadbackBufferHandle = RTHandles.Alloc(
+                pickRTSize.x, pickRTSize.y, 
+                colorFormat: GraphicsFormat.R32G32B32A32_SFloat,
+                filterMode: FilterMode.Point,
+                name: "GeoLayerReadbackBuffer"
+            );
+
+            int requiredLength = pickRTSize.x * pickRTSize.y;
+            if (m_DecodedDataArray == null || m_DecodedDataArray.Length != requiredLength)
+            {
+                m_DecodedDataArray = new PickedGeoData[requiredLength];
+                if(enableDebugLog) Debug.Log($"[GeoLayerPicker] 数组重新初始化，长度: {requiredLength}");
+            }
         }
 
         public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
@@ -283,27 +279,32 @@ namespace XericLibrary.PostProcess
             {
                 RebuildDrawList();
                 m_IsDirty = false;
+                if(enableDebugLog) Debug.Log($"[GeoLayerPicker] DrawList 重建完成，包含 {m_DrawList.Count} 个 SubMesh。");
             }
 
-            // 降频计时器逻辑
-            m_TimeSinceLastReadback += Time.deltaTime;
-
-            if (m_IsReadbackInProgress && m_TimeSinceLastReadback > 1.0f)
+            m_ReadbackFrameCounter++;
+            if (m_IsReadbackInProgress && m_ReadbackFrameCounter > 60) 
             {
-                Debug.LogWarning("[GeoLayerPicker] AsyncGPUReadback 超时，强制重置状态。");
+                Debug.LogWarning("[GeoLayerPicker] AsyncGPUReadback 疑似卡死，强制重置并清理队列。");
+                AsyncGPUReadback.WaitAllRequests(); 
                 m_IsReadbackInProgress = false;
+                m_ReadbackFrameCounter = 0;
             }
+
+            m_TimeSinceLastReadback += Time.deltaTime;
 
             bool shouldRead = false;
             if (m_TimeSinceLastReadback >= readbackInterval && !m_IsReadbackInProgress)
             {
                 m_TimeSinceLastReadback = 0f;
                 m_IsReadbackInProgress = true;
+                m_ReadbackFrameCounter = 0; 
                 shouldRead = true;
             }
 
             m_ScriptablePass.passMaterial = pickMaterial;
-            m_ScriptablePass.passRT = m_PickRT;
+            m_ScriptablePass.passRTHandle = m_PickRTHandle;
+            m_ScriptablePass.passReadbackBuffer = m_ReadbackBufferHandle; 
             m_ScriptablePass.passDrawList = m_DrawList;
             m_ScriptablePass.passSampleRect = sampleRect;
             m_ScriptablePass.requestReadback = shouldRead;
@@ -311,9 +312,6 @@ namespace XericLibrary.PostProcess
             renderer.EnqueuePass(m_ScriptablePass);
         }
 
-        /// <summary>
-        /// 异步回读完成回调 (在后台线程或主线程延迟执行，不阻塞渲染)
-        /// </summary>
         private void OnReadbackComplete(AsyncGPUReadbackRequest request)
         {
             m_IsReadbackInProgress = false;
@@ -324,33 +322,25 @@ namespace XericLibrary.PostProcess
                 return;
             }
 
-            // 【核心修复】：使用 GetData<Color> 获取数据
             var rawData = request.GetData<Color>();
             if (rawData.Length == 0) return;
             
-            int width = m_PickRT.width;
-            int height = m_PickRT.height;
-    
-            // 【核心修复】：不要依赖 rawData.Length 作为遍历上限，
-            // 而是以我们目标数组 m_DecodedDataArray 的长度为准！
+            // 修复：使用 m_ReadbackBufferHandle.rt 获取宽高
+            int width = m_ReadbackBufferHandle.rt.width;
+            int height = m_ReadbackBufferHandle.rt.height;
             int count = m_DecodedDataArray.Length; 
 
-            // DirectX 平台下，异步回读的 Y 轴是翻转的
             bool flipY = SystemInfo.graphicsUVStartsAtTop; 
+            m_ValidDataCount = 0; 
 
             for (int i = 0; i < count; i++)
             {
-                // 计算目标像素的坐标
                 int x = i % width;
                 int y = i / width;
 
-                // 处理 DirectX 的 Y 轴翻转
                 int sourceY = flipY ? (height - 1 - y) : y;
-        
-                // 计算源数据在 rawData 中的真实索引
                 int sourceIndex = sourceY * width + x;
 
-                // 【安全防线】：防止源索引超出 rawData 的实际物理长度
                 if (sourceIndex < 0 || sourceIndex >= rawData.Length) 
                 {
                     m_DecodedDataArray[i] = new PickedGeoData { isValid = false };
@@ -359,9 +349,7 @@ namespace XericLibrary.PostProcess
 
                 Color pixel = rawData[sourceIndex];
         
-                // 你的 Shader 输出是 float4(worldPos.xyz, matID)
-                // 在标准 RGBA 映射下，A 通道就是 ID
-                if (pixel.a > 0.1f) 
+                if (pixel.a > 0.5f) 
                 {
                     m_DecodedDataArray[i] = new PickedGeoData
                     {
@@ -369,11 +357,17 @@ namespace XericLibrary.PostProcess
                         matID = Mathf.RoundToInt(pixel.a),
                         worldPos = new Vector3(pixel.r, pixel.g, pixel.b)
                     };
+                    m_ValidDataCount++;
                 }
                 else
                 {
                     m_DecodedDataArray[i] = new PickedGeoData { isValid = false, matID = 0 };
                 }
+            }
+            
+            if (enableDebugLog)
+            {
+                Debug.Log($"[GeoLayerPicker] 回读完成！总像素: {count}, 有效拾取像素: {m_ValidDataCount}");
             }
         }
 
@@ -400,7 +394,17 @@ namespace XericLibrary.PostProcess
 
         protected override void Dispose(bool disposing)
         {
-            if (m_PickRT != null && m_PickRT.IsCreated()) m_PickRT.Release();
+            // 修复：正确释放 RTHandle 并置空
+            if (m_PickRTHandle != null) 
+            { 
+                m_PickRTHandle.Release(); 
+                m_PickRTHandle = null; 
+            }
+            if (m_ReadbackBufferHandle != null) 
+            { 
+                m_ReadbackBufferHandle.Release(); 
+                m_ReadbackBufferHandle = null; 
+            }
             if (Instance == this) Instance = null;
         }
     }
