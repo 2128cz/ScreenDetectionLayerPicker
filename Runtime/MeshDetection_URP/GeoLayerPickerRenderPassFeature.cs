@@ -2,6 +2,7 @@ using UnityEngine;
 using UnityEngine.Rendering;
 using UnityEngine.Rendering.Universal;
 using System.Collections.Generic;
+using System.Linq;
 using Unity.Collections;
 using UnityEngine.Experimental.Rendering;
 using XericLibrary.Runtime.MacroLibrary;
@@ -19,6 +20,7 @@ namespace XericLibrary.PostProcess
         public Matrix4x4 matrix;
         public int subMeshIndex;
         public int uniqueMatID;
+        public Material material;
     }
 
     /// <summary>
@@ -30,6 +32,48 @@ namespace XericLibrary.PostProcess
         public int matID;
         public Vector3 worldPos;
         public bool isValid;
+
+        public Material GetMaterial()
+        {
+            if (GeoLayerPickerRenderPassFeature.Instance != null)
+            {
+                return GeoLayerPickerRenderPassFeature.Instance.GetMaterialByID(matID);
+            }
+            return null;
+        }
+
+        public string GetMaterialName()
+        {
+            var mat = GetMaterial();
+            return mat != null ? mat.name : "Unknown";
+        }
+    }
+
+    /// <summary>
+    /// 材质统计结果
+    /// </summary>
+    [System.Serializable]
+    public struct MaterialStatResult
+    {
+        public int matID;
+        public float location;
+        public float percentage;
+        public int pixelCount;
+
+        public Material GetMaterial()
+        {
+            if (GeoLayerPickerRenderPassFeature.Instance != null)
+            {
+                return GeoLayerPickerRenderPassFeature.Instance.GetMaterialByID(matID);
+            }
+            return null;
+        }
+
+        public string GetMaterialName()
+        {
+            var mat = GetMaterial();
+            return mat != null ? mat.name : "Unknown";
+        }
     }
 
     /// <summary>
@@ -43,7 +87,30 @@ namespace XericLibrary.PostProcess
 
         private readonly List<MeshFilter> m_GeoMeshes = new List<MeshFilter>();
         private readonly List<SubMeshDrawData> m_DrawList = new List<SubMeshDrawData>();
+        private readonly Dictionary<Material, int> m_MaterialToID = new Dictionary<Material, int>();
+        private readonly Dictionary<int, Material> m_IDToMaterial = new Dictionary<int, Material>();
         private bool m_IsDirty = true;
+
+        public IReadOnlyDictionary<Material, int> MaterialToID => m_MaterialToID;
+        public IReadOnlyDictionary<int, Material> IDToMaterial => m_IDToMaterial;
+
+        public Material GetMaterialByID(int matID)
+        {
+            if (m_IDToMaterial.TryGetValue(matID, out var material))
+            {
+                return material;
+            }
+            return null;
+        }
+
+        public int GetIDByMaterial(Material material)
+        {
+            if (material != null && m_MaterialToID.TryGetValue(material, out var id))
+            {
+                return id;
+            }
+            return -1;
+        }
 
         public void AddGeoMesh(MeshFilter meshFilter)
         {
@@ -129,6 +196,270 @@ namespace XericLibrary.PostProcess
             if (m_ReadbackBufferHandle != null)
             {
                 AsyncGPUReadback.WaitAllRequests();
+            }
+        }
+
+        #endregion
+        
+        #region 材质统计 API
+
+        public void GetVerticalMaterialStats(List<MaterialStatResult> results, float startPos = 0f, float endPos = 1f)
+        {
+            results.Clear();
+            if (m_DecodedDataArray == null || m_DecodedDataArray.Length == 0) return;
+
+            startPos = Mathf.Clamp01(startPos);
+            endPos = Mathf.Clamp01(endPos);
+            if (startPos > endPos)
+            {
+                float temp = startPos;
+                startPos = endPos;
+                endPos = temp;
+            }
+
+            int startPixelY = Mathf.FloorToInt(startPos * (pickRTSize.y - 1));
+            int endPixelY = Mathf.FloorToInt(endPos * (pickRTSize.y - 1));
+
+            Dictionary<int, List<float>> matIDToPositions = new Dictionary<int, List<float>>();
+            Dictionary<int, int> matIDToCount = new Dictionary<int, int>();
+            int totalValidPixels = 0;
+
+            for (int y = startPixelY; y <= endPixelY; y++)
+            {
+                for (int x = 0; x < pickRTSize.x; x++)
+                {
+                    int index = y * pickRTSize.x + x;
+                    if (index < 0 || index >= m_DecodedDataArray.Length) continue;
+
+                    var data = m_DecodedDataArray[index];
+                    if (!data.isValid) continue;
+
+                    float normalizedY = (float)y / (pickRTSize.y - 1);
+
+                    if (!matIDToPositions.ContainsKey(data.matID))
+                    {
+                        matIDToPositions[data.matID] = new List<float>();
+                        matIDToCount[data.matID] = 0;
+                    }
+                    matIDToPositions[data.matID].Add(normalizedY);
+                    matIDToCount[data.matID]++;
+                    totalValidPixels++;
+                }
+            }
+
+            foreach (var kvp in matIDToPositions)
+            {
+                int matID = kvp.Key;
+                var positions = kvp.Value;
+                float avgLocation = positions.Average();
+                float percentage = totalValidPixels > 0 ? (float)matIDToCount[matID] / totalValidPixels * 100f : 0f;
+
+                results.Add(new MaterialStatResult
+                {
+                    matID = matID,
+                    location = avgLocation,
+                    percentage = percentage,
+                    pixelCount = matIDToCount[matID]
+                });
+            }
+
+            results.Sort((a, b) => a.location.CompareTo(b.location));
+        }
+
+        public void GetHorizontalMaterialStats(List<MaterialStatResult> results, float startPos = 0f, float endPos = 1f)
+        {
+            results.Clear();
+            if (m_DecodedDataArray == null || m_DecodedDataArray.Length == 0) return;
+
+            startPos = Mathf.Clamp01(startPos);
+            endPos = Mathf.Clamp01(endPos);
+            if (startPos > endPos)
+            {
+                float temp = startPos;
+                startPos = endPos;
+                endPos = temp;
+            }
+
+            int startPixelX = Mathf.FloorToInt(startPos * (pickRTSize.x - 1));
+            int endPixelX = Mathf.FloorToInt(endPos * (pickRTSize.x - 1));
+
+            Dictionary<int, List<float>> matIDToPositions = new Dictionary<int, List<float>>();
+            Dictionary<int, int> matIDToCount = new Dictionary<int, int>();
+            int totalValidPixels = 0;
+
+            for (int x = startPixelX; x <= endPixelX; x++)
+            {
+                for (int y = 0; y < pickRTSize.y; y++)
+                {
+                    int index = y * pickRTSize.x + x;
+                    if (index < 0 || index >= m_DecodedDataArray.Length) continue;
+
+                    var data = m_DecodedDataArray[index];
+                    if (!data.isValid) continue;
+
+                    float normalizedX = (float)x / (pickRTSize.x - 1);
+
+                    if (!matIDToPositions.ContainsKey(data.matID))
+                    {
+                        matIDToPositions[data.matID] = new List<float>();
+                        matIDToCount[data.matID] = 0;
+                    }
+                    matIDToPositions[data.matID].Add(normalizedX);
+                    matIDToCount[data.matID]++;
+                    totalValidPixels++;
+                }
+            }
+
+            foreach (var kvp in matIDToPositions)
+            {
+                int matID = kvp.Key;
+                var positions = kvp.Value;
+                float avgLocation = positions.Average();
+                float percentage = totalValidPixels > 0 ? (float)matIDToCount[matID] / totalValidPixels * 100f : 0f;
+
+                results.Add(new MaterialStatResult
+                {
+                    matID = matID,
+                    location = avgLocation,
+                    percentage = percentage,
+                    pixelCount = matIDToCount[matID]
+                });
+            }
+
+            results.Sort((a, b) => a.location.CompareTo(b.location));
+        }
+
+        public void GetDominantMaterialByVerticalSlice(List<MaterialStatResult> results, int sliceCount = 10, float startPos = 0f, float endPos = 1f)
+        {
+            results.Clear();
+            if (m_DecodedDataArray == null || m_DecodedDataArray.Length == 0) return;
+
+            sliceCount = Mathf.Max(1, sliceCount);
+            startPos = Mathf.Clamp01(startPos);
+            endPos = Mathf.Clamp01(endPos);
+            if (startPos > endPos)
+            {
+                float temp = startPos;
+                startPos = endPos;
+                endPos = temp;
+            }
+
+            int startPixelY = Mathf.FloorToInt(startPos * (pickRTSize.y - 1));
+            int endPixelY = Mathf.FloorToInt(endPos * (pickRTSize.y - 1));
+            int totalHeight = endPixelY - startPixelY + 1;
+            if (totalHeight <= 0) return;
+
+            float sliceHeight = (float)totalHeight / sliceCount;
+
+            for (int sliceIdx = 0; sliceIdx < sliceCount; sliceIdx++)
+            {
+                int sliceStartY = startPixelY + Mathf.FloorToInt(sliceIdx * sliceHeight);
+                int sliceEndY = startPixelY + Mathf.FloorToInt((sliceIdx + 1) * sliceHeight) - 1;
+                sliceEndY = Mathf.Min(sliceEndY, endPixelY);
+
+                Dictionary<int, int> matIDCount = new Dictionary<int, int>();
+                int sliceTotal = 0;
+
+                for (int y = sliceStartY; y <= sliceEndY; y++)
+                {
+                    for (int x = 0; x < pickRTSize.x; x++)
+                    {
+                        int index = y * pickRTSize.x + x;
+                        if (index < 0 || index >= m_DecodedDataArray.Length) continue;
+
+                        var data = m_DecodedDataArray[index];
+                        if (!data.isValid) continue;
+
+                        if (!matIDCount.ContainsKey(data.matID))
+                        {
+                            matIDCount[data.matID] = 0;
+                        }
+                        matIDCount[data.matID]++;
+                        sliceTotal++;
+                    }
+                }
+
+                if (sliceTotal > 0)
+                {
+                    int dominantMatID = matIDCount.Aggregate((l, r) => l.Value > r.Value ? l : r).Key;
+                    float sliceCenterY = (sliceStartY + sliceEndY) / 2f / (pickRTSize.y - 1);
+                    float percentage = (float)matIDCount[dominantMatID] / sliceTotal * 100f;
+
+                    results.Add(new MaterialStatResult
+                    {
+                        matID = dominantMatID,
+                        location = sliceCenterY,
+                        percentage = percentage,
+                        pixelCount = matIDCount[dominantMatID]
+                    });
+                }
+            }
+        }
+
+        public void GetDominantMaterialByHorizontalSlice(List<MaterialStatResult> results, int sliceCount = 10, float startPos = 0f, float endPos = 1f)
+        {
+            results.Clear();
+            if (m_DecodedDataArray == null || m_DecodedDataArray.Length == 0) return;
+
+            sliceCount = Mathf.Max(1, sliceCount);
+            startPos = Mathf.Clamp01(startPos);
+            endPos = Mathf.Clamp01(endPos);
+            if (startPos > endPos)
+            {
+                float temp = startPos;
+                startPos = endPos;
+                endPos = temp;
+            }
+
+            int startPixelX = Mathf.FloorToInt(startPos * (pickRTSize.x - 1));
+            int endPixelX = Mathf.FloorToInt(endPos * (pickRTSize.x - 1));
+            int totalWidth = endPixelX - startPixelX + 1;
+            if (totalWidth <= 0) return;
+
+            float sliceWidth = (float)totalWidth / sliceCount;
+
+            for (int sliceIdx = 0; sliceIdx < sliceCount; sliceIdx++)
+            {
+                int sliceStartX = startPixelX + Mathf.FloorToInt(sliceIdx * sliceWidth);
+                int sliceEndX = startPixelX + Mathf.FloorToInt((sliceIdx + 1) * sliceWidth) - 1;
+                sliceEndX = Mathf.Min(sliceEndX, endPixelX);
+
+                Dictionary<int, int> matIDCount = new Dictionary<int, int>();
+                int sliceTotal = 0;
+
+                for (int x = sliceStartX; x <= sliceEndX; x++)
+                {
+                    for (int y = 0; y < pickRTSize.y; y++)
+                    {
+                        int index = y * pickRTSize.x + x;
+                        if (index < 0 || index >= m_DecodedDataArray.Length) continue;
+
+                        var data = m_DecodedDataArray[index];
+                        if (!data.isValid) continue;
+
+                        if (!matIDCount.ContainsKey(data.matID))
+                        {
+                            matIDCount[data.matID] = 0;
+                        }
+                        matIDCount[data.matID]++;
+                        sliceTotal++;
+                    }
+                }
+
+                if (sliceTotal > 0)
+                {
+                    int dominantMatID = matIDCount.Aggregate((l, r) => l.Value > r.Value ? l : r).Key;
+                    float sliceCenterX = (sliceStartX + sliceEndX) / 2f / (pickRTSize.x - 1);
+                    float percentage = (float)matIDCount[dominantMatID] / sliceTotal * 100f;
+
+                    results.Add(new MaterialStatResult
+                    {
+                        matID = dominantMatID,
+                        location = sliceCenterX,
+                        percentage = percentage,
+                        pixelCount = matIDCount[dominantMatID]
+                    });
+                }
             }
         }
 
@@ -328,14 +659,14 @@ namespace XericLibrary.PostProcess
             // 初始化调试材质
             if (m_DebugOverlayMaterial == null)
             {
-                Shader overlayShader = Shader.Find("Hidden/XericLibrary/ScreenOverrideRect");
+                Shader overlayShader = Shader.Find("Hidden/XericLibrary/GeoLayerPicker/ScreenOverrideRect");
                 if (overlayShader != null)
                 {
                     m_DebugOverlayMaterial = CoreUtils.CreateEngineMaterial(overlayShader);
                 }
                 else
                 {
-                    Debug.LogError("[GeoLayerPicker] 找不到调试 Shader: Hidden/XericLibrary/Debug/GeoPickerOverlay");
+                    Debug.LogError("[GeoLayerPicker] 找不到调试 Shader: Hidden/XericLibrary/GeoLayerPicker/ScreenOverrideRect");
                 }
             }
         }
@@ -382,7 +713,7 @@ namespace XericLibrary.PostProcess
             // 配置调试覆盖图参数
             m_ScriptablePass.drawDebugOverlay = enableDebugLog; // 由 Inspector 开关控制
             m_ScriptablePass.debugOverlayMaterial = m_DebugOverlayMaterial;
-            // m_ScriptablePass.cameraColorTarget = renderer.cameraColorTargetHandle; // 获取当前屏幕目标
+            // m_ScriptablePass.cameraColorTarget = renderer.cameraColorTargetHandle; // 当前是注册阶段无法获取目标
 
             renderer.EnqueuePass(m_ScriptablePass);
         }
@@ -449,20 +780,57 @@ namespace XericLibrary.PostProcess
         private void RebuildDrawList()
         {
             m_DrawList.Clear();
+            m_MaterialToID.Clear();
+            m_IDToMaterial.Clear();
             int globalIDCounter = 1;
 
             foreach (var mf in m_GeoMeshes)
             {
                 if (mf == null || mf.sharedMesh == null) continue;
+                
+                var renderer = mf.GetComponent<MeshRenderer>();
+                Material[] materials = renderer != null ? renderer.sharedMaterials : null;
+
                 for (int sub = 0; sub < mf.sharedMesh.subMeshCount; sub++)
                 {
+                    Material material = null;
+                    if (materials != null && sub < materials.Length)
+                    {
+                        material = materials[sub];
+                    }
+
+                    int matID;
+                    if (material != null)
+                    {
+                        if (!m_MaterialToID.TryGetValue(material, out matID))
+                        {
+                            matID = globalIDCounter++;
+                            m_MaterialToID[material] = matID;
+                            m_IDToMaterial[matID] = material;
+                        }
+                    }
+                    else
+                    {
+                        matID = globalIDCounter++;
+                    }
+
                     m_DrawList.Add(new SubMeshDrawData
                     {
                         mesh = mf.sharedMesh,
                         matrix = mf.transform.localToWorldMatrix,
                         subMeshIndex = sub,
-                        uniqueMatID = globalIDCounter++
+                        uniqueMatID = matID,
+                        material = material
                     });
+                }
+            }
+
+            if (enableDebugLog)
+            {
+                Debug.Log($"[GeoLayerPicker] 材质映射重建完成，共 {m_MaterialToID.Count} 个材质");
+                foreach (var kvp in m_MaterialToID)
+                {
+                    Debug.Log($"  ID {kvp.Value}: {kvp.Key.name}");
                 }
             }
         }
