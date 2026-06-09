@@ -75,8 +75,8 @@ Shader "Hidden/XericLibrary/GeoLayerPicker/ScreenOverrideRect"
                 }
                 
                 // 将世界坐标映射为可见颜色
-                float3 debugColor = abs(sin(col.rgb * float3(0.03, 0.1, 0.05))) * 0.5;
-                float3 debugColor2 = abs(cos(col.rgb * float3(0.05, 0.09, 0.07))) * 0.5 + 0.5;
+                float3 debugColor = sin(col.rgb * float3(0.03, 0.1, 0.05)) * 0.5 + 0.5;
+                float3 debugColor2 = cos(col.rgb * float3(0.05, 0.09, 0.07)) * 0.5 + 0.5;
                 float matIDColor = frac(col.a * 0.07);
                 debugColor = lerp(debugColor, debugColor2, matIDColor);
                 return float4(debugColor, 0.9); 
