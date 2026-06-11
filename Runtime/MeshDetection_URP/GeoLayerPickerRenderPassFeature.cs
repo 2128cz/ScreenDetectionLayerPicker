@@ -12,6 +12,16 @@ using XericLibrary.Runtime.MacroLibrary;
 namespace XericLibrary.PostProcess
 {
     /// <summary>
+    /// 摄像机匹配模式
+    /// </summary>
+    public enum CameraMatchMode
+    {
+        /// <summary> 通过 MainCamera 标签匹配 </summary>
+        Tag,
+        /// <summary> 通过名称匹配 "Main Camera" </summary>
+        Name
+    }
+    /// <summary>
     /// 用于存储展平后的 SubMesh 渲染数据
     /// </summary>
     [System.Serializable]
@@ -326,6 +336,8 @@ namespace XericLibrary.PostProcess
 
         public IReadOnlyList<MaterialIsland> GetMaterialIslands()
         {
+            if (!isActive)
+                return Array.Empty<MaterialIsland>();
             UpdateMaterialIslands();
             return m_MaterialIslands;
         }
@@ -599,6 +611,13 @@ namespace XericLibrary.PostProcess
 
         #region Inspector 配置参数
 
+        [Header("摄像机过滤")]
+        [Tooltip("开启后只在 MainCamera 上执行，避免多摄像机 FOV 不一致导致结果错位。")]
+        public bool onlyOnMainCamera = true;
+
+        [Tooltip("MainCamera 匹配模式：Tag = 通过 MainCamera 标签匹配；Name = 通过名称匹配")]
+        public CameraMatchMode cameraMatchMode = CameraMatchMode.Tag;
+
         [Header("拾取材质与尺寸")] public Material pickMaterial;
         public Vector2Int pickRTSize = new Vector2Int(64, 64);
 
@@ -860,6 +879,12 @@ namespace XericLibrary.PostProcess
 
         public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
         {
+            Camera currentCam = renderingData.cameraData.camera;
+
+            // 如果开启 onlyOnMainCamera，只匹配目标摄像机
+            if (onlyOnMainCamera && !IsMainCamera(currentCam))
+                return;
+
             if (m_IsDirty)
             {
                 RebuildDrawList();
@@ -904,6 +929,22 @@ namespace XericLibrary.PostProcess
                 m_DebugOverlayPass.overlayMaterial = m_DebugOverlayMaterial;
                 m_DebugOverlayPass.sampleRect = sampleRect;
                 renderer.EnqueuePass(m_DebugOverlayPass);
+            }
+        }
+
+        /// <summary> 判断当前摄像机是否为目标摄像机 </summary>
+        private bool IsMainCamera(Camera cam)
+        {
+            if (cam == null) return false;
+
+            switch (cameraMatchMode)
+            {
+                case CameraMatchMode.Tag:
+                    return cam.CompareTag("MainCamera");
+                case CameraMatchMode.Name:
+                    return cam.name == "Main Camera";
+                default:
+                    return false;
             }
         }
 
