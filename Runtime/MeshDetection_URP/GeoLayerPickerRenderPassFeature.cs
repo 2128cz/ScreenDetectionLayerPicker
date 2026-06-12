@@ -673,21 +673,20 @@ namespace XericLibrary.PostProcess
                 float ndcYMin = passSampleRect.y * 2f - 1f;
                 float ndcYMax = (passSampleRect.y + passSampleRect.height) * 2f - 1f;
 
-                // 将 NDC 子区域 [ndcMin, ndcMax] 映射到 [-1, 1]
-                // 投影矩阵变换: ndc = -m00 * viewX/viewZ - m02
-                // 修改后: ndc_new = scale * ndc_original - offset
-                // ndcMin → -1:  scale * ndcMin - offset = -1  →  offset = scale * ndcMin + 1
-                // ndcMax → +1:  scale * ndcMax - offset = +1  →  scale = 2/(ndcMax - ndcMin)
-                float scaleX = 2f / (ndcXMax - ndcXMin);
-                float scaleY = 2f / (ndcYMax - ndcYMin);
-                float offsetX = 1f + ndcXMin * scaleX;
-                float offsetY = 1f + ndcYMin * scaleY;
+                // 使用 remap 矩阵将 NDC 子区域映射到 [-1, 1]
+                // remap * proj 在 clip space 中做仿射变换：
+                //   clipX' = remap.m00 * clipX + remap.m03 * clipW
+                //   clipW' = clipW（不变）
+                //   ndc'   = clipX'/clipW' = remap.m00 * ndc + remap.m03
+                // 边界: ndcMin → -1, ndcMax → +1
+                // 此法对透视投影和正交投影均正确
+                Matrix4x4 remap = Matrix4x4.identity;
+                remap.m00 = 2f / (ndcXMax - ndcXMin);
+                remap.m03 = -(ndcXMax + ndcXMin) / (ndcXMax - ndcXMin);
+                remap.m11 = 2f / (ndcYMax - ndcYMin);
+                remap.m13 = -(ndcYMax + ndcYMin) / (ndcYMax - ndcYMin);
 
-                projMatrix.m00 *= scaleX;
-                projMatrix.m11 *= scaleY;
-                projMatrix.m02 += offsetX;
-                projMatrix.m12 += offsetY;
-
+                projMatrix = remap * projMatrix;
                 projMatrix = GL.GetGPUProjectionMatrix(projMatrix, true);
                 cmd.SetViewProjectionMatrices(viewMatrix, projMatrix);
                 cmd.SetViewport(new Rect(0, 0, passRTHandle.rt.width, passRTHandle.rt.height));
@@ -962,6 +961,11 @@ namespace XericLibrary.PostProcess
             if (rawData.Length == 0) return;
 
             // 修复：使用 m_ReadbackBufferHandle.rt 获取宽高
+            if (m_ReadbackBufferHandle == null)
+            {
+                Debug.LogWarning("[GeoLayerPicker] 更新时机不对！");
+                return;
+            }
             int width = m_ReadbackBufferHandle.rt.width;
             int height = m_ReadbackBufferHandle.rt.height;
             int count = m_DecodedDataArray.Length;
